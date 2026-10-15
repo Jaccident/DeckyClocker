@@ -1,115 +1,45 @@
-import {
-  ButtonItem,
-  PanelSection,
-  PanelSectionRow,
-  Navigation,
-  staticClasses
-} from "@decky/ui";
-import {
-  addEventListener,
-  removeEventListener,
-  callable,
-  definePlugin,
-  toaster,
-  // routerHook
-} from "@decky/api"
+import { callable, definePlugin } from "@decky/api";
+import { PanelSection, PanelSectionRow, ButtonItem, SliderField, ToggleField } from "@decky/ui";
 import { useState } from "react";
-import { FaShip } from "react-icons/fa";
+import { TbClockCog } from "react-icons/tb";
 
-// import logo from "../assets/logo.png";
-
-// This function calls the python function "add", which takes in two numbers and returns their sum (as a number)
-// Note the type annotations:
-//  the first one: [first: number, second: number] is for the arguments
-//  the second one: number is for the return value
-const add = callable<[first: number, second: number], number>("add");
-
-// This function calls the python function "start_timer", which takes in no arguments and returns nothing.
-// It starts a (python) timer which eventually emits the event 'timer_event'
-const startTimer = callable<[], void>("start_timer");
+const setTime = callable<[string], { ok: boolean; error: string }>("set_time");
+const setNtp = callable<[boolean], { ok: boolean; error: string }>("set_ntp");
 
 function Content() {
-  const [result, setResult] = useState<number | undefined>();
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [day, setDay] = useState(now.getDate());
+  const [hour, setHour] = useState(now.getHours());
+  const [minute, setMinute] = useState(now.getMinutes());
+  const [ntp, setNtpState] = useState(true);
 
-  const onClick = async () => {
-    const result = await add(Math.random(), Math.random());
-    setResult(result);
-  };
+  const pad = (n: number) => String(n).padStart(2, "0");
 
   return (
-    <PanelSection title="Panel Section">
+    <PanelSection title="Date & Time">
       <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={onClick}
-        >
-          {result ?? "Add two numbers via Python"}
-        </ButtonItem>
+        <ToggleField label="Automatic time (NTP)" checked={ntp}
+          onChange={async (v) => { setNtpState(v); await setNtp(v); }} />
       </PanelSectionRow>
+      <PanelSectionRow><SliderField label="Year" value={year} min={2020} max={2040} step={1} showValue onChange={setYear} /></PanelSectionRow>
+      <PanelSectionRow><SliderField label="Month" value={month} min={1} max={12} step={1} showValue onChange={setMonth} /></PanelSectionRow>
+      <PanelSectionRow><SliderField label="Day" value={day} min={1} max={31} step={1} showValue onChange={setDay} /></PanelSectionRow>
+      <PanelSectionRow><SliderField label="Hour" value={hour} min={0} max={23} step={1} showValue onChange={setHour} /></PanelSectionRow>
+      <PanelSectionRow><SliderField label="Minute" value={minute} min={0} max={59} step={1} showValue onChange={setMinute} /></PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => startTimer()}
-        >
-          {"Start Python timer"}
-        </ButtonItem>
+        <ButtonItem layout="below" onClick={async () => {
+          setNtpState(false);
+          await setTime(`${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:00`);
+        }}>Apply</ButtonItem>
       </PanelSectionRow>
-
-      {/* <PanelSectionRow>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <img src={logo} />
-        </div>
-      </PanelSectionRow> */}
-
-      {/*<PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => {
-            Navigation.Navigate("/decky-plugin-test");
-            Navigation.CloseSideMenus();
-          }}
-        >
-          Router
-        </ButtonItem>
-      </PanelSectionRow>*/}
     </PanelSection>
   );
-};
+}
 
-export default definePlugin(() => {
-  console.log("Template plugin initializing, this is called once on frontend startup")
-
-  // serverApi.routerHook.addRoute("/decky-plugin-test", DeckyPluginRouterTest, {
-  //   exact: true,
-  // });
-
-  // Add an event listener to the "timer_event" event from the backend
-  const listener = addEventListener<[
-    test1: string,
-    test2: boolean,
-    test3: number
-  ]>("timer_event", (test1, test2, test3) => {
-    console.log("Template got timer_event with:", test1, test2, test3)
-    toaster.toast({
-      title: "template got timer_event",
-      body: `${test1}, ${test2}, ${test3}`
-    });
-  });
-
-  return {
-    // The name shown in various decky menus
-    name: "Test Plugin",
-    // The element displayed at the top of your plugin's menu
-    titleView: <div className={staticClasses.Title}>Decky Example Plugin</div>,
-    // The content of your plugin's menu
-    content: <Content />,
-    // The icon displayed in the plugin list
-    icon: <FaShip />,
-    // The function triggered when your plugin unloads
-    onDismount() {
-      console.log("Unloading")
-      removeEventListener("timer_event", listener);
-      // serverApi.routerHook.removeRoute("/decky-plugin-test");
-    },
-  };
-});
+export default definePlugin(() => ({
+  name: "DeckyClocker",
+  content: <Content />,
+  icon: <TbClockCog />,
+}));

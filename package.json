@@ -1,7 +1,7 @@
 {
-  "name": "decky-plugin-template",
+  "name": "DeckyClocker",
   "version": "0.0.1",
-  "description": "A template to quickly create decky plugins from scratch, based on TypeScript and webpack",
+  "description": "Manually set the system date and time",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
@@ -19,12 +19,12 @@
     "steam-deck",
     "deck"
   ],
-  "author": "You <you@you.tld>",
+  "author": "Jack Venegas <jack@jaccident.com>",
   "license": "BSD-3-Clause",
   "bugs": {
-    "url": "https://github.com/SteamDeckHomebrew/decky-plugin-template/issues"
+    "url": "https://github.com/Jaccident/DeckyClocker/issues"
   },
-  "homepage": "https://github.com/SteamDeckHomebrew/decky-plugin-template#readme",
+  "homepage": "https://github.com/Jaccident/DeckyClocker#readme",
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",
