@@ -2,6 +2,7 @@ import { callable, definePlugin } from "@decky/api";
 import { PanelSection, PanelSectionRow, ButtonItem, SliderField, ToggleField } from "@decky/ui";
 import { useState } from "react";
 import { TbClockCog } from "react-icons/tb";
+import { callable, definePlugin, toaster } from "@decky/api";
 
 const setTime = callable<[string], { ok: boolean; error: string }>("set_time");
 const setNtp = callable<[boolean], { ok: boolean; error: string }>("set_ntp");
@@ -30,9 +31,15 @@ function Content() {
       <PanelSectionRow><SliderField label="Minute" value={minute} min={0} max={59} step={1} showValue onChange={setMinute} /></PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={async () => {
-          setNtpState(false);
-          await setTime(`${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:00`);
-        }}>Apply</ButtonItem>
+          const result = await setTime(`${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:00`);
+          console.log("set_time result:", result);
+          if (result.ok) {
+            setNtpState(false);
+            toaster.toast({ title: "DeckyClocker", body: "Time set successfully" });
+          } else {
+            toaster.toast({ title: "DeckyClocker", body: result.error || "Failed to set time" });
+  }
+}}>Apply</ButtonItem>
       </PanelSectionRow>
     </PanelSection>
   );

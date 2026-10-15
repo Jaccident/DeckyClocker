@@ -1,7 +1,18 @@
 import asyncio
+import os
 import re
 
 TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+def _clean_env():
+    env = os.environ.copy()
+    for var in ("LD_LIBRARY_PATH", "LD_PRELOAD"):
+        orig = env.pop(var + "_ORIG", None)
+        if orig is not None:
+            env[var] = orig
+        else:
+            env.pop(var, None)
+    return env
 
 class Plugin:
     async def _run(self, *args):
@@ -9,6 +20,7 @@ class Plugin:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_clean_env(),
         )
         out, err = await proc.communicate()
         return proc.returncode, out.decode().strip(), err.decode().strip()

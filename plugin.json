@@ -2,6 +2,7 @@
   "name": "DeckyClocker",
   "author": "Jaccident",
   "flags": ["root"],
+  "api_version": 1,
   "publish": {
     "tags": ["utility"],
     "description": "Manually set the system date and time",
