@@ -1,6 +1,6 @@
 {
   "name": "DeckyClocker",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Manually set the system date and time",
   "type": "module",
   "scripts": {

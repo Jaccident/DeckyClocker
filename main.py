@@ -26,10 +26,14 @@ class Plugin:
         return proc.returncode, out.decode().strip(), err.decode().strip()
 
     async def get_status(self):
-        _, out, _ = await self._run(
-            "timedatectl", "show", "-p", "NTP", "-p", "TimeUSec", "-p", "Timezone"
-        )
-        return out
+        _, out, _ = await self._run("timedatectl", "show", "-p", "NTP", "-p", "Timezone")
+        info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        _, now, _ = await self._run("date", "+%Y-%m-%d %H:%M:%S")
+        return {
+            "ntp": info.get("NTP") == "yes",
+            "timezone": info.get("Timezone", ""),
+            "now": now,
+        }
 
     async def set_ntp(self, enabled: bool):
         code, _, err = await self._run("timedatectl", "set-ntp", "true" if enabled else "false")
@@ -38,7 +42,9 @@ class Plugin:
     async def set_time(self, value: str):
         if not TIME_RE.match(value):
             return {"ok": False, "error": "Invalid format"}
-        await self._run("timedatectl", "set-ntp", "false")
+        code, _, err = await self._run("timedatectl", "set-ntp", "false")
+        if code != 0:
+            return {"ok": False, "error": err or "Could not disable automatic time"}
         code, _, err = await self._run("timedatectl", "set-time", value)
         return {"ok": code == 0, "error": err}
 
