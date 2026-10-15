@@ -58,3 +58,4 @@ cli/decky
 .vscode/settings.json
 .decky-tmp/
 deploy.sh
+deployfresh.sh
