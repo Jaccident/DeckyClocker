@@ -25,6 +25,12 @@ class Plugin:
         out, err = await proc.communicate()
         return proc.returncode, out.decode().strip(), err.decode().strip()
 
+    async def _restore_ntp(self):
+        try:
+            await self._run("timedatectl", "set-ntp", "true")
+        except Exception:
+            pass  # never let cleanup raise
+
     async def get_status(self):
         _, out, _ = await self._run("timedatectl", "show", "-p", "NTP", "-p", "Timezone")
         info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
@@ -49,7 +55,12 @@ class Plugin:
         return {"ok": code == 0, "error": err}
 
     async def _main(self):
-        pass
+        # Safety net: if a previous session left NTP off (e.g. across a reboot),
+        # start synchronized.
+        await self._restore_ntp()
 
     async def _unload(self):
-        pass
+        await self._restore_ntp()
+
+    async def _uninstall(self):
+        await self._restore_ntp()
