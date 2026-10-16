@@ -1,5 +1,5 @@
 import { callable, definePlugin, toaster } from "@decky/api";
-import { PanelSection, PanelSectionRow, ButtonItem, SliderField, ToggleField, Field } from "@decky/ui";
+import { PanelSection, PanelSectionRow, ButtonItem, SliderField, Field } from "@decky/ui";
 import { useEffect, useState } from "react";
 import { TbClockCog, TbChevronDown, TbChevronUp } from "react-icons/tb";
 
@@ -78,15 +78,15 @@ useEffect(() => {
       if (result.ok) {
         setNtpState(enabled);
         if (enabled) {
-          notify("Automatic time restored");
+          notify("Synchronized device time restored");
           setTimeout(loadStatus, 3000); // give NTP a moment to sync, then refresh
         }
       } else {
-        notify(short(result.error || "Failed to change automatic time"));
+        notify(short(result.error || "Synchronization failed"));
       }
     } catch (e) {
       console.log("set_ntp threw:", e);
-      notify("Backend call failed");
+      notify("Critical Error: e001");
     }
   };
 
@@ -99,13 +99,13 @@ useEffect(() => {
       console.log("set_time result:", result);
       if (result.ok) {
         setNtpState(false);
-        notify("Time set successfully");
+        notify("Custom device time applied");
       } else {
-        notify(short(result.error || "Failed to set time"));
+        notify(short(result.error || "Custom time failed"));
       }
     } catch (e) {
       console.log("set_time threw:", e);
-      notify("Backend call failed");
+      notify("Critical Error: e002");
     }
   };
 
@@ -151,6 +151,11 @@ useEffect(() => {
         <PanelSectionRow>
           <div style={{ fontSize: "14px" }}>
             Device Time: <strong>{formatTime(deviceNow)}</strong>
+          </div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: "14px" }}>
+                Timezone: <strong>{timezone || "loading..."}</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
