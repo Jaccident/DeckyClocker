@@ -40,11 +40,26 @@ class Plugin:
             pass  # never let cleanup raise
 
     async def get_status(self):
-        _, out, _ = await self._run("timedatectl", "show", "-p", "NTP", "-p", "Timezone")
+        """Return {"ok": bool, "error": str, "ntp": bool, "timezone": str, "now": str}.
+
+        On failure, ok is False and error explains why, so the frontend can show
+        an "unknown" state instead of guessing.
+        """
+        code, out, err = await self._run("timedatectl", "show", "-p", "NTP", "-p", "Timezone")
+        if code != 0:
+            return {"ok": False, "error": err or "timedatectl failed", "ntp": False, "timezone": "", "now": ""}
+        # timedatectl show prints "KEY=value" lines; split each on the first "=".
         info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-        _, now, _ = await self._run("date", "+%Y-%m-%d %H:%M:%S")
+        if "NTP" not in info:
+            return {"ok": False, "error": "Unexpected timedatectl output", "ntp": False, "timezone": "", "now": ""}
+        # "date" gives local time in the system timezone, matching what set_time interprets.
+        code, now, err = await self._run("date", "+%Y-%m-%d %H:%M:%S")
+        if code != 0:
+            return {"ok": False, "error": err or "date failed", "ntp": False, "timezone": "", "now": ""}
         return {
-            "ntp": info.get("NTP") == "yes",
+            "ok": True,
+            "error": "",
+            "ntp": info["NTP"] == "yes",
             "timezone": info.get("Timezone", ""),
             "now": now,
         }

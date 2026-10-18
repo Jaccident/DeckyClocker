@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { TbClockCog, TbChevronDown, TbChevronUp } from "react-icons/tb";
 
 type Result = { ok: boolean; error: string };
-type Status = { ntp: boolean; timezone: string; now: string };
+type Status = { ok: boolean; error: string; ntp: boolean; timezone: string; now: string };
 
 // Backend calls. These names *MUST* match the method names in main.py *EXACTLY*.
 const getStatus = callable<[], Status>("get_status");
@@ -29,7 +29,7 @@ function Content() {
   const [day, setDay] = useState(initial.getDate());
   const [hour, setHour] = useState(initial.getHours());
   const [minute, setMinute] = useState(initial.getMinutes());
-  const [ntp, setNtpState] = useState(true);
+  const [ntp, setNtpState] = useState<boolean | null>(null); // null = not known yet or read failed
   const [timezone, setTimezone] = useState("");
   const [loading, setLoading] = useState(true);
   const [deviceNow, setDeviceNow] = useState(new Date());
@@ -39,9 +39,15 @@ function Content() {
   const loadStatus = async () => {
     try {
       const s = await getStatus();
-      console.log("get_status result:", s);
-      setNtpState(s.ntp);
-      setTimezone(s.timezone);
+        console.log("get_status result:", s);
+        if (!s.ok) {
+          setNtpState(null);
+          notify(short(s.error || "Could not read time status"));
+          return; // finally still clears the loading flag
+        }
+        setNtpState(s.ntp);
+        setTimezone(s.timezone);
+      // ...the existing date match and slider setters stay as they are
       // Backend sends "YYYY-MM-DD HH:MM:SS"; seconds aren't used in the Slider UI (they are shown in Device Time though).
       const m = s.now.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
       if (m) {
@@ -162,7 +168,7 @@ function Content() {
         <PanelSectionRow>
           <div style={{ fontSize: "14px" }}>
             {/* Current System Clock Synchronization Status */}
-             System Clock: <strong>{ntp ? "Synchronized" : "Custom"}</strong>
+             System Clock: <strong>{ntp === null ? "Unknown" : ntp ? "Synchronized" : "Custom"}</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
