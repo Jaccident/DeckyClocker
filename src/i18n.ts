@@ -395,6 +395,7 @@ const dictionaries: Record<string, Dict> = {
     italian,
     german,
     spanish,
+    latam: spanish, // Latin American Spanish reuses the Spanish dictionary for now
     dutch,
  };
 

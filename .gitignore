@@ -57,5 +57,7 @@ cli/*
 cli/decky
 .vscode/settings.json
 .decky-tmp/
+build_scripts
+build_scripts/*
 deploy.sh
-deployfresh.sh
+package.sh
