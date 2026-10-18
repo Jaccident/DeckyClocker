@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { TbClockCog, TbChevronDown, TbChevronUp } from "react-icons/tb";
 
 type Result = { ok: boolean; error: string };
+// ntp is the NTP state after the call, or null if the backend couldn't determine it.
+type TimeResult = { ok: boolean; error: string; ntp: boolean | null };
 type Status = { ok: boolean; error: string; ntp: boolean; timezone: string; now: string };
 
 // Backend calls. These names *MUST* match the method names in main.py *EXACTLY*.
 const getStatus = callable<[], Status>("get_status");
-const setTime = callable<[string], Result>("set_time");
+const setTime = callable<[string], TimeResult>("set_time");
 const setNtp = callable<[boolean], Result>("set_ntp");
 
 // Day 0 of the next month is the last day of this one (m is 1-based), so this handles 28/29/30/31 and leap years.
@@ -39,15 +41,14 @@ function Content() {
   const loadStatus = async () => {
     try {
       const s = await getStatus();
-        console.log("get_status result:", s);
-        if (!s.ok) {
-          setNtpState(null);
-          notify(short(s.error || "Could not read time status"));
-          return; // finally still clears the loading flag
-        }
-        setNtpState(s.ntp);
-        setTimezone(s.timezone);
-      // ...the existing date match and slider setters stay as they are
+      console.log("get_status result:", s);
+      if (!s.ok) {
+        setNtpState(null);
+        notify(short(s.error || "Could not read time status"));
+        return; // finally still clears the loading flag
+      }
+      setNtpState(s.ntp);
+      setTimezone(s.timezone);
       // Backend sends "YYYY-MM-DD HH:MM:SS"; seconds aren't used in the Slider UI (they are shown in Device Time though).
       const m = s.now.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
       if (m) {
@@ -70,14 +71,13 @@ function Content() {
     loadStatus();
   }, []);
 
-// Tick the displayed clock every second. Frontend only, no backend calls.
+  // Tick the displayed clock every second. Frontend only, no backend calls.
   useEffect(() => {
     const id = setInterval(() => setDeviceNow(new Date()), 1000);
     return () => clearInterval(id); // stop ticking when the panel closes
   }, []);
 
-
-// Changing year or month can make the current day invalid (e.g. 31-JAN -> 31-FEB, or 29-FEB in leap year -> 29-FEB in a non-leap year), so reduce the day down to the new month's length.
+  // Changing year or month can make the current day invalid (e.g. 31-JAN -> 31-FEB, or 29-FEB in leap year -> 29-FEB in a non-leap year), so reduce the day down to the new month's length.
   const changeYear = (v: number) => {
     setYear(v);
     setDay((d) => Math.min(d, daysInMonth(v, month)));
@@ -118,8 +118,10 @@ function Content() {
     try {
       const result = await setTime(value);
       console.log("set_time result:", result);
+      // The backend reports the real NTP state after the call (and rolls it back
+      // on failure), so the System Clock row can't disagree with reality.
+      if (result.ntp !== null) setNtpState(result.ntp);
       if (result.ok) {
-        setNtpState(false);
         notify("Custom device time applied");
       } else {
         notify(short(result.error || "Custom time failed"));
@@ -168,7 +170,7 @@ function Content() {
         <PanelSectionRow>
           <div style={{ fontSize: "14px" }}>
             {/* Current System Clock Synchronization Status */}
-             System Clock: <strong>{ntp === null ? "Unknown" : ntp ? "Synchronized" : "Custom"}</strong>
+            System Clock: <strong>{ntp === null ? "Unknown" : ntp ? "Synchronized" : "Custom"}</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -211,7 +213,7 @@ function Content() {
           />
         </PanelSectionRow>
         <PanelSectionRow>
-           {/* Hour Slider */}
+          {/* Hour Slider */}
           <SliderField label="Hour" value={hour} min={0} max={23} step={1} showValue onChange={setHour} />
         </PanelSectionRow>
         <PanelSectionRow>

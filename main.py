@@ -34,10 +34,17 @@ class Plugin:
 
     # This is called on plugin load, unload, and uninstall to ensure the system is left in a Synchronized state.
     async def _restore_ntp(self):
+        """Turn automatic time (NTP) back on. Returns True on success, never raises.
+
+        Used for cleanup (load, unload, uninstall) and for rolling back a failed
+        set_time. It must not raise, or a failure here could stop the plugin from
+        loading or unloading.
+        """
         try:
-            await self._run("timedatectl", "set-ntp", "true")
+            code, _, _ = await self._run("timedatectl", "set-ntp", "true")
+            return code == 0
         except Exception:
-            pass  # never let cleanup raise
+            return False
 
     async def get_status(self):
         """Return {"ok": bool, "error": str, "ntp": bool, "timezone": str, "now": str}.
@@ -69,14 +76,37 @@ class Plugin:
         return {"ok": code == 0, "error": err}
 
     async def set_time(self, value: str):
-        if not TIME_RE.match(value):
-            return {"ok": False, "error": "Invalid format"}
+        """Set the system clock to "YYYY-MM-DD HH:MM:SS" (local time).
+
+        Returns {"ok": bool, "error": str, "ntp": bool | None}, where "ntp" is the
+        NTP state after the call (None if it couldn't be determined). If setting
+        the time fails, NTP is put back to whatever it was before.
+        """
+        if not isinstance(value, str) or not TIME_RE.fullmatch(value):
+            return {"ok": False, "error": "Invalid format", "ntp": None}
+
+        # Remember the original state so a failure can be rolled back to it.
+        code, out, err = await self._run("timedatectl", "show", "-p", "NTP")
+        if code != 0 or "NTP=" not in out:
+            return {"ok": False, "error": err or "Could not read current NTP state", "ntp": None}
+        was_on = "NTP=yes" in out
+
+        # timedatectl refuses to set the time while NTP is on, so disable it first.
         code, _, err = await self._run("timedatectl", "set-ntp", "false")
         if code != 0:
-            return {"ok": False, "error": err or "Could not disable automatic time"}
-        code, _, err = await self._run("timedatectl", "set-time", value)
-        return {"ok": code == 0, "error": err}
+            return {"ok": False, "error": err or "Could not disable automatic time", "ntp": was_on}
 
+        code, _, err = await self._run("timedatectl", "set-time", value)
+        if code == 0:
+            return {"ok": True, "error": "", "ntp": False}
+
+        # set-time failed. Don't leave the clock unsynchronized because of it.
+        error = err or "Could not set time"
+        if was_on:
+            if await self._restore_ntp():
+                return {"ok": False, "error": error, "ntp": True}
+            return {"ok": False, "error": error + " (and could not restore automatic time)", "ntp": False}
+        return {"ok": False, "error": error, "ntp": False}
 
     #The following three functions are called on plugin load, unload, and uninstall to ensure the system is left in a Synchronized state.
     #These are a safeguard against the user disabling NTP and leaving the system in an unsynchronized state after the plugin is removed, or Decky Loader is restarted.
