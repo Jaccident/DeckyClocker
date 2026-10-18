@@ -1,12 +1,27 @@
 import { callable, definePlugin, toaster } from "@decky/api";
 import { PanelSection, PanelSectionRow, ButtonItem, SliderField, Field } from "@decky/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TbClockCog, TbChevronDown, TbChevronUp } from "react-icons/tb";
+import { t, languageCodes, getLanguageOverride, setLanguageOverride } from "./i18n";
+
+// ---- Tunable timings (milliseconds) ----
+// Buttons stay locked this long after an operation finishes, so they don't flicker back mid-operation.
+const COOLDOWN_MS = 1000;
+// After Restore, re-check the clock this often until it reports synchronised...
+const SYNC_POLL_INTERVAL_MS = 1000;
+// ...for at most this many checks (interval x attempts = the longest the buttons stay locked waiting).
+const SYNC_POLL_ATTEMPTS = 10;
+
+// Testing aid: shows a button that cycles the panel language. Set to false before publishing.
+const DEV_LANGUAGE_SWITCHER = false;
 
 type Result = { ok: boolean; error: string };
 // ntp is the NTP state after the call, or null if the backend couldn't determine it.
 type TimeResult = { ok: boolean; error: string; ntp: boolean | null };
-type Status = { ok: boolean; error: string; ntp: boolean; timezone: string; now: string };
+// ntp = automatic time is enabled (the setting). synced = the clock has actually synchronised with a time server.
+type Status = { ok: boolean; error: string; ntp: boolean; synced: boolean; timezone: string; now: string };
+// Which operation currently holds the lock (null = idle).
+type BusyKind = "apply" | "restore" | null;
 
 // Backend calls. These names *MUST* match the method names in main.py *EXACTLY*.
 const getStatus = callable<[], Status>("get_status");
@@ -17,11 +32,12 @@ const setNtp = callable<[boolean], Result>("set_ntp");
 const daysInMonth = (y: number, m: number) => new Date(y, m, 0).getDate();
 const pad = (n: number) => String(n).padStart(2, "0");
 // Use "YYYY-MM-DD HH:MM:SS" for Date & Time layout.
-const formatTime = (t: Date) =>
-  `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
+const formatTime = (d: Date) =>
+  `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 // Truncates long error text, Toasts cut off long messages.
 const short = (s: string) => (s.length > 80 ? s.slice(0, 77) + "..." : s);
 const notify = (body: string) => toaster.toast({ title: "DeckyClocker", body });
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function Content() {
   // Placeholder values. Replaced by loadStatus().
@@ -32,35 +48,49 @@ function Content() {
   const [hour, setHour] = useState(initial.getHours());
   const [minute, setMinute] = useState(initial.getMinutes());
   const [ntp, setNtpState] = useState<boolean | null>(null); // null = not known yet or read failed
+  const [synced, setSynced] = useState(false);               // only meaningful when ntp is true
   const [timezone, setTimezone] = useState("");
   const [loading, setLoading] = useState(true);
   const [deviceNow, setDeviceNow] = useState(new Date());
   const [showInfo, setShowInfo] = useState(false);
+  const [busy, setBusy] = useState<BusyKind>(null); // which button was pressed; drives disabled state and labels
+  const busyRef = useRef(false);                    // the real lock, because state updates are async
+  const [langCode, setLangCode] = useState(getLanguageOverride());
 
-  // Reads the Deck's current NTP state (synchronisation to server), timezone, and time from the backend and syncs the sliders to it, so the panel doesn't show stale data from previous user sessions.
-  const loadStatus = async () => {
+  // Reads NTP state, sync state, timezone and time from the backend.
+  // sliders: also move the sliders to the Deck's current time (default true).
+  // quiet:   suppress the error toast (used while polling).
+  // Returns true only if automatic time is on AND the clock has synchronised.
+  const loadStatus = async (opts: { sliders?: boolean; quiet?: boolean } = {}): Promise<boolean> => {
+    const { sliders = true, quiet = false } = opts;
     try {
       const s = await getStatus();
       console.log("get_status result:", s);
       if (!s.ok) {
         setNtpState(null);
-        notify(short(s.error || "Could not read time status"));
-        return; // finally still clears the loading flag
+        setSynced(false);
+        if (!quiet) notify(short(s.error || t("readFailed")));
+        return false;
       }
       setNtpState(s.ntp);
+      setSynced(s.synced);
       setTimezone(s.timezone);
-      // Backend sends "YYYY-MM-DD HH:MM:SS"; seconds aren't used in the Slider UI (they are shown in Device Time though).
-      const m = s.now.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
-      if (m) {
-        setYear(Number(m[1]));
-        setMonth(Number(m[2]));
-        setDay(Number(m[3]));
-        setHour(Number(m[4]));
-        setMinute(Number(m[5]));
+      if (sliders) {
+        // Backend sends "YYYY-MM-DD HH:MM:SS"; seconds aren't used in the Slider UI (they are shown in Device Time though).
+        const m = s.now.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+        if (m) {
+          setYear(Number(m[1]));
+          setMonth(Number(m[2]));
+          setDay(Number(m[3]));
+          setHour(Number(m[4]));
+          setMinute(Number(m[5]));
+        }
       }
+      return s.ntp && s.synced;
     } catch (e) {
       console.log("get_status threw:", e);
-      notify("Could not read time status");
+      if (!quiet) notify(t("readFailed"));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -88,61 +118,90 @@ function Content() {
     setDay((d) => Math.min(d, daysInMonth(year, v)));
   };
 
-  // Turns automatic time (NTP) on. Used by "Restore Synchronized Time" UI elements
-  // in notify(STRING), STRING is used to populate the post-action Toast.
-  const applyNtp = async (enabled: boolean) => {
+  // Runs one backend operation at a time. A second press while one is in flight
+  // (or cooling down) is ignored. "kind" records which button was pressed.
+  const runExclusive = async (kind: Exclude<BusyKind, null>, fn: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(kind);
     try {
-      const result = await setNtp(enabled);
-      console.log("set_ntp result:", result);
-      if (result.ok) {
-        setNtpState(enabled);
-        if (enabled) {
-          notify("Synchronized device time restored");
-          setTimeout(loadStatus, 3000); // give NTP a moment to sync, then refresh
-        }
-      } else {
-        notify(short(result.error || "Synchronization failed"));
-      }
-    } catch (e) {
-      console.log("set_ntp threw:", e);
-      notify("Critical Error: e001"); // e001 = set_ntp call threw (backend unreachable or crashed)
+      await fn();
+    } finally {
+      // Release only after the cooldown, so the buttons don't flicker back mid-operation.
+      setTimeout(() => {
+        busyRef.current = false;
+        setBusy(null);
+      }, COOLDOWN_MS);
     }
   };
 
-  // Sends the slider values to the backend in "YYYY-MM-DD HH:MM:00" format. NTP not sent as backend disables that first.
-  const applyTime = async () => {
-    // Final safeguard against invalid date value.
-    const safeDay = Math.min(day, daysInMonth(year, month));
-    const value = `${year}-${pad(month)}-${pad(safeDay)} ${pad(hour)}:${pad(minute)}:00`;
-    console.log("Applying time:", value);
-    try {
-      const result = await setTime(value);
-      console.log("set_time result:", result);
-      // The backend reports the real NTP state after the call (and rolls it back
-      // on failure), so the System Clock row can't disagree with reality.
-      if (result.ntp !== null) setNtpState(result.ntp);
-      if (result.ok) {
-        notify("Custom device time applied");
-      } else {
-        notify(short(result.error || "Custom time failed"));
+  // Turns automatic time (NTP) on, then waits for the clock to actually synchronise.
+  // Used by "Restore Synchronized Time". notify(STRING) populates the post-action Toast.
+  const applyNtp = (enabled: boolean) =>
+    runExclusive("restore", async () => {
+      try {
+        const result = await setNtp(enabled);
+        console.log("set_ntp result:", result);
+        if (result.ok) {
+          setNtpState(enabled);
+          setSynced(false); // unknown until the poll reads it
+          if (enabled) {
+            // Re-poll until synced or out of attempts. The lock holds throughout.
+            let isSynced = false;
+            for (let i = 0; i < SYNC_POLL_ATTEMPTS && !isSynced; i++) {
+              await sleep(SYNC_POLL_INTERVAL_MS);
+              isSynced = await loadStatus({ sliders: false, quiet: true });
+            }
+            await loadStatus({ quiet: true }); // one final read, this time moving the sliders to the corrected time
+            notify(isSynced ? t("syncRestored") : t("syncPending"));
+          }
+        } else {
+          notify(short(result.error || t("syncFailed")));
+        }
+      } catch (e) {
+        console.log("set_ntp threw:", e);
+        notify(`${t("criticalError")}: e001`); // e001 = set_ntp call threw (backend unreachable or crashed)
       }
-    } catch (e) {
-      console.log("set_time threw:", e);
-      notify("Critical Error: e002"); // e002 = set_time call threw (backend unreachable or crashed)
-    }
-  };
+    });
+
+  // Sends the slider values to the backend in "YYYY-MM-DD HH:MM:00" format. NTP not sent as backend disables that first.
+  const applyTime = () =>
+    runExclusive("apply", async () => {
+      // Final safeguard against invalid date value.
+      const safeDay = Math.min(day, daysInMonth(year, month));
+      const value = `${year}-${pad(month)}-${pad(safeDay)} ${pad(hour)}:${pad(minute)}:00`;
+      console.log("Applying time:", value);
+      try {
+        const result = await setTime(value);
+        console.log("set_time result:", result);
+        // The backend reports the real NTP state after the call (and rolls it back
+        // on failure), so the System Clock row can't disagree with reality.
+        if (result.ntp !== null) setNtpState(result.ntp);
+        if (result.ok) {
+          notify(t("applied"));
+        } else {
+          notify(short(result.error || t("customFailed")));
+        }
+      } catch (e) {
+        console.log("set_time threw:", e);
+        notify(`${t("criticalError")}: e002`); // e002 = set_time call threw (backend unreachable or crashed)
+      }
+    });
 
   return (
     <>
-      {/* Collapsible User Guide section. The guide is hidden by default, and can be toggled with the "Show User Guide" button. */}
+      {/* Collapsible User Guide section. The guide is hidden by default, and can be toggled with the "User Guide" button. */}
       <PanelSection>
+        <PanelSectionRow>
+          <div style={{ height: ".8px", background: "rgba(255, 255, 255, 0.15)" }} />
+        </PanelSectionRow>
         <PanelSectionRow>
           <Field
             focusable
             onActivate={() => setShowInfo((v) => !v)}
             onClick={() => setShowInfo((v) => !v)}
-            label={showInfo ? "Hide User Guide" : "Show User Guide"}
-            bottomSeparator="none"
+            label={showInfo ? t("hideGuide") : t("showGuide")}
+            //bottomSeparator="none" //UI choice
           >
             {showInfo ? <TbChevronUp /> : <TbChevronDown />}
           </Field>
@@ -151,59 +210,74 @@ function Content() {
           <>
             <PanelSectionRow>
               <div style={{ fontSize: "12px", lineHeight: "1.4" }}>
-                DeckyClocker is a tool for setting a custom date and time on SteamOS. It can be used to unlock achievements, access time-limited content, or test software that depends on the system clock. It's not intended for long-term use, and you should restore the system clock to a Synchronized state after use. Use this tool at your own risk. The author is not responsible for any issues that may arise from its use.
+                {t("guideIntro")}
                 <br />
                 <br />
-                Use the sliders below to select a custom date and time, then click "Apply Custom Time" below to apply it. When you're done, click "Restore Synchronized Time" to return to the system clock.
+                {t("guideUsage")}
                 <br />
                 <br />
-                <strong>Please Note:</strong>
+                <strong>{t("guideNoteTitle")}</strong>
                 <br />
-                It can take a moment for a Custom Time to show on the Steam UI after Applying it.
+                {t("guideNote")}
               </div>
             </PanelSectionRow>
           </>
         )}
       </PanelSection>
       {/* Always visible section */}
-      <PanelSection title={"Date & Time"}>
+      <PanelSection title={t("sectionCurrent")}>
         <PanelSectionRow>
           <div style={{ fontSize: "14px" }}>
-            {/* Current System Clock Synchronization Status */}
-            System Clock: <strong>{ntp === null ? "Unknown" : ntp ? "Synchronized" : "Custom"}</strong>
+            {/* Current System Clock Synchronization Status.
+            Four states: Unknown (read failed), Custom (NTP off), Waiting for sync (NTP on, not yet synced), Synchronized. */}
+            {t("systemClock")}: <strong>{
+              ntp === null ? t("clockUnknown")
+              : !ntp ? t("clockCustom")
+              : synced ? t("clockSynced")
+              : t("clockWaiting")
+            }</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
           <div style={{ fontSize: "14px" }}>
             {/* Current Device Time */}
-            Device Time: <strong>{formatTime(deviceNow)}</strong>
+            {t("deviceTime")}: <strong>{formatTime(deviceNow)}</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          <div style={{ fontSize: "14px" }}>
-            {/* Current Timezone (this could be removed, it's informational.
-            If removed also remove the corresponding state variable, and setTimezone(s.timezone) in loadStatus to avoid warning) */}
-            Timezone: <strong>{timezone || "loading..."}</strong>
+          <div
+            style={{
+              fontSize: "14px",
+              borderBottom: ".8px solid rgba(255, 255, 255, 0.15)",
+              paddingBottom: "8px",
+            }}
+          >
+            {t("timezone")}: <strong>{timezone || t("loading")}</strong>
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          <div style={{ height: "4px" }} />
+          {/* This button restores the synchronized time */}
+          <ButtonItem layout="below" disabled={busy !== null} onClick={() => applyNtp(true)}>
+            {busy === "restore" ? t("restoring") : t("restoreBtn")}
+          </ButtonItem>
         </PanelSectionRow>
+      </PanelSection>
+      <PanelSection title={t("sectionCustom")}>
         <PanelSectionRow>
-          {/* Year Slider, 2010 -> 2040.
+          {/* Year Slider, 2003 -> 2040.
           Earliest game I could find complaints regarding was MLB2K12.
           Could be earlier if necessary.
           Look at free input or a stepper if range increases */}
-          <SliderField label="Year" value={year} min={2010} max={2040} step={1} showValue onChange={changeYear} />
+          <SliderField label={t("year")} value={year} min={2003} max={2040} step={1} showValue onChange={changeYear} />
         </PanelSectionRow>
         <PanelSectionRow>
           {/* Month Slider */}
-          <SliderField label="Month" value={month} min={1} max={12} step={1} showValue onChange={changeMonth} />
+          <SliderField label={t("month")} value={month} min={1} max={12} step={1} showValue onChange={changeMonth} />
         </PanelSectionRow>
         <PanelSectionRow>
           {/* Day Slider, max value is the number of days in the selected month that year */}
           <SliderField
-            label="Day"
+            label={t("day")}
             value={Math.min(day, daysInMonth(year, month))}
             min={1}
             max={daysInMonth(year, month)}
@@ -214,40 +288,54 @@ function Content() {
         </PanelSectionRow>
         <PanelSectionRow>
           {/* Hour Slider */}
-          <SliderField label="Hour" value={hour} min={0} max={23} step={1} showValue onChange={setHour} />
+          <SliderField label={t("hour")} value={hour} min={0} max={23} step={1} showValue onChange={setHour} />
         </PanelSectionRow>
         <PanelSectionRow>
           {/* Minute Slider */}
-          <SliderField label="Minute" value={minute} min={0} max={59} step={1} showValue onChange={setMinute} />
+          <SliderField label={t("minute")} value={minute} min={0} max={59} step={1} showValue onChange={setMinute} />
         </PanelSectionRow>
         <PanelSectionRow>
-          {/* This button applies the custom time input by the user */}
-          <ButtonItem layout="below" disabled={loading} onClick={applyTime}>
-            Apply Custom Time
+          {/* This button applies the custom time input by the user.
+          Both buttons are disabled while busy; only the pressed one shows its in-progress text. */}
+          <ButtonItem layout="below" disabled={loading || busy !== null} onClick={applyTime}>
+            {busy === "apply" ? t("applying") : t("applyBtn")}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          {/* This button restores the synchronized time */}
-          <ButtonItem layout="below" onClick={() => applyNtp(true)}>
-            Restore Synchronized Time
-          </ButtonItem>
+          <div style={{ height: "4px" }} />
         </PanelSectionRow>
         <PanelSectionRow>
           {/* User warning */}
           <div style={{ fontSize: "12px", lineHeight: "1.4" }}>
-            A very out of sync clock can impact Steam logins, downloads, and HTTPS connections.
-            Use "Restore Synchronized Time" above to fix it.
+            {t("warning")}
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
-          <div style={{ height: "8px" }} />
+          <div style={{ height: "4px" }} />
         </PanelSectionRow>
         <PanelSectionRow>
-          {/* A cheely wee credit, if you're in here adding things you BETTER be adding yourself to this too! */}
+          {/* A cheeky wee credit, if you're in here adding things you BETTER be adding yourself to this too! */}
           <div style={{ fontSize: "12px", lineHeight: "1.4" }}>
-            Developed with ❤️ by Jack
+            Developed with ❤️ by Jack,
+            <br />
+            with utterly invaluable help from nanwangjkl
           </div>
         </PanelSectionRow>
+        {/* Dev only: cycles the panel language for testing. Set DEV_LANGUAGE_SWITCHER to false before publishing. */}
+        {DEV_LANGUAGE_SWITCHER && (
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => {
+                const next = languageCodes[(languageCodes.indexOf(langCode) + 1) % languageCodes.length];
+                setLanguageOverride(next);
+                setLangCode(next);
+              }}
+            >
+              {`Test language: ${langCode}`}
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
       </PanelSection>
     </>
   );

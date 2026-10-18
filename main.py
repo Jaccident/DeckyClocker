@@ -8,6 +8,12 @@ import re
 # It does not validate that input won't cause a system error (tested year bounds are set in Frontend).
 TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
+# Serialises clock-changing calls so two operations can't interleave
+# (e.g. set-ntp false / set-time / set-ntp true racing each other).
+# Note: _restore_ntp deliberately does NOT take this lock, because set_time calls
+# it while already holding the lock and asyncio.Lock is not re-entrant.
+_clock_lock = asyncio.Lock()
+
 def _clean_env():
     # Decky Loader is a PyInstaller bundle.
     # It points LD_LIBRARY_PATH at its own bundled libraries, and child processes inherit that.
@@ -47,31 +53,42 @@ class Plugin:
             return False
 
     async def get_status(self):
-        """Return {"ok": bool, "error": str, "ntp": bool, "timezone": str, "now": str}.
+        """Return {"ok": bool, "error": str, "ntp": bool, "synced": bool, "timezone": str, "now": str}.
 
-        On failure, ok is False and error explains why, so the frontend can show
-        an "unknown" state instead of guessing.
+        ntp    = automatic time is enabled (the setting).
+        synced = the clock has actually synchronised with a time server.
+        ntp can be True while synced is False (just restored, or offline).
+        On failure, ok is False and error explains why.
         """
-        code, out, err = await self._run("timedatectl", "show", "-p", "NTP", "-p", "Timezone")
+        fail = {"ok": False, "ntp": False, "synced": False, "timezone": "", "now": ""}
+        code, out, err = await self._run(
+            "timedatectl", "show", "-p", "NTP", "-p", "NTPSynchronized", "-p", "Timezone"
+        )
         if code != 0:
-            return {"ok": False, "error": err or "timedatectl failed", "ntp": False, "timezone": "", "now": ""}
+            return {**fail, "error": err or "timedatectl failed"}
         # timedatectl show prints "KEY=value" lines; split each on the first "=".
         info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
         if "NTP" not in info:
-            return {"ok": False, "error": "Unexpected timedatectl output", "ntp": False, "timezone": "", "now": ""}
+            return {**fail, "error": "Unexpected timedatectl output"}
         # "date" gives local time in the system timezone, matching what set_time interprets.
         code, now, err = await self._run("date", "+%Y-%m-%d %H:%M:%S")
         if code != 0:
-            return {"ok": False, "error": err or "date failed", "ntp": False, "timezone": "", "now": ""}
+            return {**fail, "error": err or "date failed"}
         return {
             "ok": True,
             "error": "",
             "ntp": info["NTP"] == "yes",
+            "synced": info.get("NTPSynchronized") == "yes",
             "timezone": info.get("Timezone", ""),
             "now": now,
         }
 
     async def set_ntp(self, enabled: bool):
+        """Enable or disable automatic time. Returns {"ok": bool, "error": str}."""
+        async with _clock_lock:
+            return await self._set_ntp_unlocked(enabled)
+
+    async def _set_ntp_unlocked(self, enabled: bool):
         code, _, err = await self._run("timedatectl", "set-ntp", "true" if enabled else "false")
         return {"ok": code == 0, "error": err}
 
@@ -82,6 +99,10 @@ class Plugin:
         NTP state after the call (None if it couldn't be determined). If setting
         the time fails, NTP is put back to whatever it was before.
         """
+        async with _clock_lock:
+            return await self._set_time_unlocked(value)
+
+    async def _set_time_unlocked(self, value: str):
         if not isinstance(value, str) or not TIME_RE.fullmatch(value):
             return {"ok": False, "error": "Invalid format", "ntp": None}
 
@@ -111,7 +132,7 @@ class Plugin:
     #The following three functions are called on plugin load, unload, and uninstall to ensure the system is left in a Synchronized state.
     #These are a safeguard against the user disabling NTP and leaving the system in an unsynchronized state after the plugin is removed, or Decky Loader is restarted.
     #These should not be removed without being replaced without a similar safeguard.
-    
+
     #Runs on Reboot as "set-ntp false" can survive.
     async def _main(self):
         await self._restore_ntp()
@@ -121,6 +142,6 @@ class Plugin:
         await self._restore_ntp()
 
     # Runs when the plugin is removed (explicit inclusion).
-    # Not every Decky version will call this; _unload (above) still runs when the plugin stops. 
+    # Not every Decky version will call this; _unload (above) still runs when the plugin stops.
     async def _uninstall(self):
         await self._restore_ntp()
