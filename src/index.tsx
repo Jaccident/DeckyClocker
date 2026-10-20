@@ -316,9 +316,7 @@ function Content() {
         <PanelSectionRow>
           {/* A cheeky wee credit, if you're in here adding things you BETTER be adding yourself to this too! */}
           <div style={{ fontSize: "12px", lineHeight: "1.4" }}>
-            Developed with ❤️ by Jack,
-            <br />
-            with utterly invaluable help from nanwangjkl
+            Developed with ❤️ by Jack and nanwangjkl.
           </div>
         </PanelSectionRow>
         {/* Dev only: cycles the panel language for testing. Set DEV_LANGUAGE_SWITCHER to false before publishing. */}
